@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import numpy as np
 from fpdf import FPDF
-import io
 import tempfile
 import os
 
@@ -66,7 +65,7 @@ if uploaded_file is not None:
     max_timeline = st.sidebar.slider("Timeline Window (Days)", 30, 1500, 700)
     decay_pct = st.sidebar.slider("Burn-off Threshold (% of Peak)", 10, 95, 90)
 
-    # 4. Generate Reports & Charts
+    # 4. PDF Setup
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -100,6 +99,10 @@ if uploaded_file is not None:
         # Plotly Figure
         fig = px.area(agg_plot, x="Days Since Asset Start", y="Metrics Organic Views", color="Video Rank Name",
                      title=f"Timeline Stacking for {current_vol} Iterations", template="plotly_white")
+        
+        # --- REMOVE RED OUTLINES ---
+        fig.update_traces(line=dict(width=0))
+        
         st.plotly_chart(fig, use_container_width=True)
 
         # Build Insights Section
@@ -128,12 +131,12 @@ if uploaded_file is not None:
                     st.write(d_str)
                     group_summary_txt += d_str + "\n"
 
-        # --- ADD TO PDF ---
+        # --- ADD CHART AND TEXT TO PDF ---
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(0, 10, f"Group: {current_vol} Iterations", ln=True)
         pdf.set_font("Arial", size=10)
         
-        # Save chart as image and add to PDF
+        # Snapshot the chart for PDF
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
             fig.write_image(tmpfile.name)
             pdf.image(tmpfile.name, x=10, w=180)
@@ -143,7 +146,7 @@ if uploaded_file is not None:
         pdf.ln(10)
         st.divider()
 
-    # Download Button
+    # Final Download
     st.download_button("📥 Download Full Strategic Report (PDF)", data=pdf.output(dest='S').encode('latin-1'), 
                        file_name="YT_Iteration_Report.pdf", mime="application/pdf")
 

@@ -3,3 +3,4 @@ pandas
 plotly
 numpy
 fpdf
+kaleido==0.2.1

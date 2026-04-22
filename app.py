@@ -16,9 +16,20 @@ st.markdown("""
 ### 📖 Glossary
 - **Asset**: The core creative content, identified in this data by a unique **Custom ID**. 
 - **Iteration**: Each individual upload of an asset. **Video 1** is the original baseline, while **Video 2, 3, etc.** are re-uploads.
-- **28-Day Injection Impact**: Measures both the **percentage lift** and the **actual view increase** in the asset's total volume during the 28 days after a new iteration is posted, compared to the 28 days before.
+- **28-Day Injection Impact**: Measures the **percentage lift**, the **total view increase**, and the **daily view velocity** added to the asset's total volume in the 28 days after an iteration launch.
 """)
 st.divider()
+
+def format_views(n):
+    """Formats large numbers into readable K or M strings."""
+    if n is None: return "0"
+    abs_n = abs(n)
+    if abs_n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    elif abs_n >= 1_000:
+        return f"{n/1_000:.1f}K"
+    else:
+        return f"{int(n)}"
 
 def calculate_decay_day(video_df, decay_threshold_pct):
     video_df = video_df.sort_values('Days Since Published')
@@ -61,7 +72,7 @@ if uploaded_file is not None:
     df['Days Since Asset Start'] = (df['Metrics Date Date'] - df['Asset_Day_0']).dt.days
     df['Days Since Published'] = (df['Metrics Date Date'] - df['Video data Published Date']).dt.days
 
-    # 3. Sidebar Settings
+    # 3. Sidebar
     st.sidebar.header("Global Settings")
     max_timeline = st.sidebar.slider("Timeline Window (Days)", 30, 1500, 700)
     decay_pct = st.sidebar.slider("Burn-off Threshold (% of Peak)", 10, 95, 90)
@@ -146,10 +157,13 @@ if uploaded_file is not None:
                 if total_diffs:
                     avg_lift = np.mean(total_lifts) if total_lifts else 0
                     avg_diff = np.mean(total_diffs)
-                    l_str = f"- Injection V{r}: **{avg_lift:+.1f}%** ({avg_diff:+,.0f} views)"
+                    avg_daily = avg_diff / 28
+                    
+                    # Update format to: +1894.1% (+34.5K views, 1.2K daily views)
+                    l_str = f"- Injection V{r}: **{avg_lift:+.1f}%** (+{format_views(avg_diff)} views, {format_views(avg_daily)} daily views)"
                     st.write(l_str); group_summary_txt += l_str.replace('**', '') + "\n"
 
-        # --- PDF Export Logic ---
+        # --- PDF Export ---
         pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, f"Group: {current_vol} Iterations", ln=True)
         pdf.set_font("Arial", size=10)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
@@ -160,4 +174,4 @@ if uploaded_file is not None:
 
     st.download_button("📥 Download Strategic Report (PDF)", data=pdf.output(dest='S').encode('latin-1'), file_name="YT_Strategic_Report.pdf")
 else:
-    st.info("👋 Upload your YouTube CSV to begin.")
+    st.info("👋 Upload a CSV to begin.")

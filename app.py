@@ -15,7 +15,7 @@ st.title("Strategic Asset Lifecycle & Decay Analysis")
 st.markdown("""
 ### 📖 Glossary
 - **Asset**: The core creative content, identified in this data by a unique **Custom ID**. 
-- **Iteration**: Each individual upload of an asset. **Video 1** is the original baseline, while **Video 2, 3, etc.** are subsequent iterations or re-uploads.
+- **Iteration**: Each individual upload of an asset. **Video 1** is the original baseline, while **Video 2, 3, etc.** represent subsequent versions or re-uploads.
 """)
 st.divider()
 
@@ -60,7 +60,7 @@ if uploaded_file is not None:
     df['Days Since Asset Start'] = (df['Metrics Date Date'] - df['Asset_Day_0']).dt.days
     df['Days Since Published'] = (df['Metrics Date Date'] - df['Video data Published Date']).dt.days
 
-    # 3. Sidebar
+    # 3. Sidebar Controls
     st.sidebar.header("Global Settings")
     max_timeline = st.sidebar.slider("Timeline Window (Days)", 30, 1500, 700)
     decay_pct = st.sidebar.slider("Burn-off Threshold (% of Peak)", 10, 95, 90)
@@ -73,7 +73,7 @@ if uploaded_file is not None:
     pdf.cell(200, 10, "YouTube Strategic Iteration Report", ln=True, align='C')
     pdf.ln(10)
 
-    # Filter for groups with iterations (>1 video)
+    # Loop through all groups with more than 1 video
     unique_vols = sorted([v for v in df['Total_Videos'].unique() if v > 1])
 
     for current_vol in unique_vols:
@@ -82,41 +82,39 @@ if uploaded_file is not None:
         
         st.header(f"📈 Assets with {current_vol} Iterations (Sample: {group_sample_size})")
         
-        # Zero-Padding & Alignment Logic
+        # Zero-Padding & Alignment Logic for Chart
         ranks = range(1, current_vol + 1)
         timeline = range(0, max_timeline + 1)
         template = pd.MultiIndex.from_product([ranks, timeline], names=['Video Rank', 'Days Since Asset Start']).to_frame(index=False)
         agg_actual = sub_df.groupby(['Video Rank', 'Days Since Asset Start'])['Metrics Organic Views'].mean().reset_index()
         agg_plot = template.merge(agg_actual, on=['Video Rank', 'Days Since Asset Start'], how='left').fillna(0)
         
-        # Hide views before average launch
+        # Standardize timing based on average launch days
         avg_launches = video_info[video_info['Total_Videos'] == current_vol].groupby('Video Rank')['Days_From_Start'].mean()
         for r, start_day in avg_launches.items():
             agg_plot.loc[(agg_plot['Video Rank'] == r) & (agg_plot['Days Since Asset Start'] < start_day), 'Metrics Organic Views'] = 0
 
         agg_plot['Video Rank Name'] = "Video " + agg_plot['Video Rank'].astype(str)
 
-        # Plotly Figure
+        # Plotly Area Chart
         fig = px.area(agg_plot, x="Days Since Asset Start", y="Metrics Organic Views", color="Video Rank Name",
                      title=f"Timeline Stacking for {current_vol} Iterations", template="plotly_white")
-        
-        # --- REMOVE RED OUTLINES ---
-        fig.update_traces(line=dict(width=0))
-        
+        fig.update_traces(line=dict(width=0)) # Remove red outlines
         st.plotly_chart(fig, use_container_width=True)
 
-        # Build Insights Section
-        col_in1, col_in2 = st.columns(2)
+        # Build Insights
         group_summary_txt = f"--- {current_vol} Iterations Group ---\nSample Size: {group_sample_size} assets\n"
         
-        with col_in1:
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
             st.markdown("**Upload Timing**")
             for r in range(2, current_vol + 1):
                 t_str = f"- Video {r}: Day {avg_launches[r]:.1f} ({avg_launches[r]-avg_launches[r-1]:.1f} days after V{r-1})"
                 st.write(t_str)
                 group_summary_txt += t_str + "\n"
 
-        with col_in2:
+        with col2:
             st.markdown(f"**Decay (Day below {decay_pct}% peak)**")
             decay_results = []
             for vid_id in sub_df['Video data Video ID'].unique():
@@ -131,12 +129,25 @@ if uploaded_file is not None:
                     st.write(d_str)
                     group_summary_txt += d_str + "\n"
 
-        # --- ADD CHART AND TEXT TO PDF ---
+        with col3:
+            st.markdown("**28-Day Net Performance Lift**")
+            # Filter for first 28 days of each video's life
+            perf_28 = sub_df[sub_df['Days Since Published'] <= 27]
+            # Average total views per iteration rank
+            rank_28_avg = perf_28.groupby(['Video data Custom ID', 'Video Rank'])['Metrics Organic Views'].sum().groupby('Video Rank').mean()
+            
+            for r in range(2, current_vol + 1):
+                if r in rank_28_avg and (r-1) in rank_28_avg:
+                    lift = ((rank_28_avg[r] - rank_28_avg[r-1]) / rank_28_avg[r-1]) * 100
+                    l_str = f"- V{r} vs V{r-1}: **{lift:+.1f}%** views"
+                    st.write(l_str)
+                    group_summary_txt += l_str.replace('**', '') + " (First 28 Days)\n"
+
+        # Add to PDF
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(0, 10, f"Group: {current_vol} Iterations", ln=True)
         pdf.set_font("Arial", size=10)
         
-        # Snapshot the chart for PDF
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
             fig.write_image(tmpfile.name)
             pdf.image(tmpfile.name, x=10, w=180)
@@ -146,9 +157,9 @@ if uploaded_file is not None:
         pdf.ln(10)
         st.divider()
 
-    # Final Download
-    st.download_button("📥 Download Full Strategic Report (PDF)", data=pdf.output(dest='S').encode('latin-1'), 
+    # Download PDF
+    st.download_button("📥 Download Full Strategic Report (PDF)", 
+                       data=pdf.output(dest='S').encode('latin-1'), 
                        file_name="YT_Iteration_Report.pdf", mime="application/pdf")
-
 else:
-    st.info("👋 Upload a CSV to generate iteration analysis across all asset groups.")
+    st.info("👋 Upload a CSV to generate iteration analysis.")

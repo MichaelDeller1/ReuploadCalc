@@ -16,7 +16,7 @@ st.markdown("""
 ### 📖 Glossary
 - **Asset**: The core creative content, identified in this data by a unique **Custom ID**. 
 - **Iteration**: Each individual upload of an asset. **Video 1** is the original baseline, while **Video 2, 3, etc.** are re-uploads.
-- **28-Day Injection Impact**: Measures the % increase in total asset viewership in the 28 days *after* an iteration is posted compared to the 28 days *before* it was posted.
+- **28-Day Injection Impact**: Measures both the **percentage lift** and the **actual view increase** in the asset's total volume during the 28 days after a new iteration is posted, compared to the 28 days before.
 """)
 st.divider()
 
@@ -61,7 +61,7 @@ if uploaded_file is not None:
     df['Days Since Asset Start'] = (df['Metrics Date Date'] - df['Asset_Day_0']).dt.days
     df['Days Since Published'] = (df['Metrics Date Date'] - df['Video data Published Date']).dt.days
 
-    # 3. Sidebar
+    # 3. Sidebar Settings
     st.sidebar.header("Global Settings")
     max_timeline = st.sidebar.slider("Timeline Window (Days)", 30, 1500, 700)
     decay_pct = st.sidebar.slider("Burn-off Threshold (% of Peak)", 10, 95, 90)
@@ -82,7 +82,7 @@ if uploaded_file is not None:
         
         st.header(f"📈 Assets with {current_vol} Iterations (Sample: {group_sample_size})")
         
-        # Plot Logic
+        # Chart Logic
         ranks = range(1, current_vol + 1)
         timeline = range(0, max_timeline + 1)
         template = pd.MultiIndex.from_product([ranks, timeline], names=['Video Rank', 'Days Since Asset Start']).to_frame(index=False)
@@ -99,7 +99,7 @@ if uploaded_file is not None:
         fig.update_traces(line=dict(width=0))
         st.plotly_chart(fig, use_container_width=True)
 
-        # 5. Injection Impact & Insights
+        # 5. Insights Section
         group_summary_txt = f"--- {current_vol} Iterations Group ---\nSample Size: {group_sample_size} assets\n"
         col1, col2, col3 = st.columns(3)
         
@@ -124,16 +124,13 @@ if uploaded_file is not None:
 
         with col3:
             st.markdown("**28-Day Injection Impact**")
-            # Calculate total views across all videos for each Custom ID per day
             asset_daily_total = sub_df.groupby(['Video data Custom ID', 'Metrics Date Date'])['Metrics Organic Views'].sum().reset_index()
             
             for r in range(2, current_vol + 1):
-                # Calculate avg impact across all assets in group
-                total_lift_pct = []
+                total_lifts = []
+                total_diffs = []
                 for asset_id in sub_df['Video data Custom ID'].unique():
-                    # Get launch date of Video R
                     launch_date = sub_df[(sub_df['Video data Custom ID'] == asset_id) & (sub_df['Video Rank'] == r)]['Video data Published Date'].min()
-                    
                     asset_data = asset_daily_total[asset_daily_total['Video data Custom ID'] == asset_id]
                     
                     before = asset_data[(asset_data['Metrics Date Date'] < launch_date) & 
@@ -141,15 +138,18 @@ if uploaded_file is not None:
                     after = asset_data[(asset_data['Metrics Date Date'] >= launch_date) & 
                                        (asset_data['Metrics Date Date'] < launch_date + pd.Timedelta(days=28))]['Metrics Organic Views'].sum()
                     
+                    diff = after - before
+                    total_diffs.append(diff)
                     if before > 0:
-                        total_lift_pct.append(((after - before) / before) * 100)
+                        total_lifts.append((diff / before) * 100)
                 
-                if total_lift_pct:
-                    avg_lift = np.mean(total_lift_pct)
-                    l_str = f"- Injection V{r}: **{avg_lift:+.1f}%** total volume"
+                if total_diffs:
+                    avg_lift = np.mean(total_lifts) if total_lifts else 0
+                    avg_diff = np.mean(total_diffs)
+                    l_str = f"- Injection V{r}: **{avg_lift:+.1f}%** ({avg_diff:+,.0f} views)"
                     st.write(l_str); group_summary_txt += l_str.replace('**', '') + "\n"
 
-        # --- ADD TO PDF ---
+        # --- PDF Export Logic ---
         pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, f"Group: {current_vol} Iterations", ln=True)
         pdf.set_font("Arial", size=10)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
@@ -158,6 +158,6 @@ if uploaded_file is not None:
         pdf.multi_cell(0, 7, group_summary_txt); pdf.ln(10)
         st.divider()
 
-    st.download_button("📥 Download Strategic Report (PDF)", data=pdf.output(dest='S').encode('latin-1'), file_name="YT_Injection_Impact_Report.pdf")
+    st.download_button("📥 Download Strategic Report (PDF)", data=pdf.output(dest='S').encode('latin-1'), file_name="YT_Strategic_Report.pdf")
 else:
-    st.info("👋 Upload a CSV to begin.")
+    st.info("👋 Upload your YouTube CSV to begin.")

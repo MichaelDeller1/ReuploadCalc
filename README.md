@@ -26,9 +26,16 @@ The app expects a CSV with these columns:
 ## 🧠 Key features
 
 - Sidebar controls for timeline window and decay threshold.
+- BigQuery mode with selectable `Custom ID` and inclusive start/end date range.
 - Interactive Plotly charts for average view progression by iteration.
 - Insight panels showing upload timing, decay behavior, and 28-day performance lift.
 - PDF download of the full strategic report.
+
+## 📊 BigQuery usage
+
+- Choose `BigQuery` from the sidebar to query data directly from your BigQuery dataset.
+- Enter one or more `Custom ID`s as comma-separated values.
+- Select the start and end dates to constrain the query.
 
 ## 🛠️ Installation
 

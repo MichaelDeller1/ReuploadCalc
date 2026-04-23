@@ -5,6 +5,12 @@ import numpy as np
 from fpdf import FPDF
 import tempfile
 import os
+from datetime import date
+
+try:
+    from google.cloud import bigquery
+except ImportError:
+    bigquery = None
 
 # --- Page Configuration ---
 st.set_page_config(page_title="YT Asset Strategic Analysis", layout="wide")
@@ -19,6 +25,21 @@ st.markdown("""
 - **28-Day Injection Impact**: Measures the **percentage lift**, the **total view increase**, and the **daily view velocity** added to the asset's total volume in the 28 days after an iteration launch.
 """)
 st.divider()
+
+st.markdown("""
+## 🚪 Data input front end
+Choose a source below to load your YouTube asset view data.
+- `Upload CSV`: use a local file export.
+- `BigQuery`: query live data by `Custom ID` and date range.
+""")
+
+st.markdown("""
+### How to use
+1. Pick your data source.
+2. Enter one or more `Custom ID`s when using BigQuery.
+3. Select a start and end date.
+4. Run the analysis and download the PDF report.
+""")
 
 def format_views(n):
     """Formats large numbers into readable K or M strings."""
@@ -46,16 +67,194 @@ def calculate_decay_day(video_df, decay_threshold_pct):
         return decay_hit.iloc[0]['Days Since Published'] - 2
     return None
 
-uploaded_file = st.file_uploader("Upload your YouTube CSV Data", type=["csv"])
+@st.cache_data(ttl=300)
+def query_bq_data(custom_ids, start_date, end_date):
+    if bigquery is None:
+        raise ImportError("google-cloud-bigquery must be installed to query BigQuery.")
 
-if uploaded_file is not None:
-    # 2. Data Processing
+    client = bigquery.Client()
+    query = """
+    SELECT
+        data_warehouse_yt_content_owner_video_metadata.video_id AS data_warehouse_yt_content_owner_video_metadata_video_id,
+        data_warehouse_yt_content_owner_video_metadata.video_title AS data_warehouse_yt_content_owner_video_metadata_video_title,
+        data_warehouse_yt_channel_metadata.channel_title AS data_warehouse_yt_channel_metadata_channel_title,
+        DATE(data_warehouse_yt_content_owner_video_metadata.time_published) AS data_warehouse_yt_content_owner_video_metadata_time_published_date,
+        data_warehouse_yt_content_owner_video_metadata.custom_id AS data_warehouse_yt_content_owner_video_metadata_custom_id,
+        data_warehouse_yt_daily_video_views.day AS data_warehouse_yt_daily_video_views_day_date,
+        COALESCE(SUM(data_warehouse_yt_daily_video_views.organic_views), 0) AS data_warehouse_yt_daily_video_views_organic_views
+    FROM `resonant-gizmo-745.data_warehouse.daily_video_views_yt` AS data_warehouse_yt_daily_video_views
+    LEFT JOIN `resonant-gizmo-745.data_warehouse.content_owner_video_metadata` AS data_warehouse_yt_content_owner_video_metadata
+        ON data_warehouse_yt_daily_video_views.video_id = data_warehouse_yt_content_owner_video_metadata.video_id
+    LEFT JOIN `resonant-gizmo-745.data_warehouse.metadata_channel` AS data_warehouse_yt_channel_metadata
+        ON data_warehouse_yt_daily_video_views.channel_id = data_warehouse_yt_channel_metadata.channel_id
+    WHERE data_warehouse_yt_daily_video_views.day >= @start_date
+      AND data_warehouse_yt_daily_video_views.day <= @end_date
+      AND data_warehouse_yt_content_owner_video_metadata.custom_id IN UNNEST(@custom_ids)
+      AND (data_warehouse_yt_channel_metadata.channel_title <> 'StreamVault' OR data_warehouse_yt_channel_metadata.channel_title IS NULL)
+    GROUP BY
+        1, 2, 3, 4, 5, 6
+    ORDER BY
+        4 DESC
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("start_date", "DATE", start_date),
+            bigquery.ScalarQueryParameter("end_date", "DATE", end_date),
+            bigquery.ArrayQueryParameter("custom_ids", "STRING", custom_ids),
+        ]
+    )
+
+    return client.query(query, job_config=job_config).to_dataframe()
+
+@st.cache_data(ttl=300)
+def query_bq_custom_ids(start_date, end_date):
+    if bigquery is None:
+        raise ImportError("google-cloud-bigquery must be installed to query BigQuery.")
+
+    client = bigquery.Client()
+    query = """
+    SELECT DISTINCT
+        data_warehouse_yt_content_owner_video_metadata.custom_id AS custom_id
+    FROM `resonant-gizmo-745.data_warehouse.daily_video_views_yt` AS data_warehouse_yt_daily_video_views
+    LEFT JOIN `resonant-gizmo-745.data_warehouse.content_owner_video_metadata` AS data_warehouse_yt_content_owner_video_metadata
+        ON data_warehouse_yt_daily_video_views.video_id = data_warehouse_yt_content_owner_video_metadata.video_id
+    LEFT JOIN `resonant-gizmo-745.data_warehouse.metadata_channel` AS data_warehouse_yt_channel_metadata
+        ON data_warehouse_yt_daily_video_views.channel_id = data_warehouse_yt_channel_metadata.channel_id
+    WHERE data_warehouse_yt_daily_video_views.day >= @start_date
+      AND data_warehouse_yt_daily_video_views.day <= @end_date
+      AND data_warehouse_yt_content_owner_video_metadata.custom_id IS NOT NULL
+      AND (data_warehouse_yt_channel_metadata.channel_title <> 'StreamVault' OR data_warehouse_yt_channel_metadata.channel_title IS NULL)
+    ORDER BY custom_id
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("start_date", "DATE", start_date),
+            bigquery.ScalarQueryParameter("end_date", "DATE", end_date),
+        ]
+    )
+
+    result = client.query(query, job_config=job_config).to_dataframe()
+    return result['custom_id'].astype(str).tolist()
+
+# --- Data source selection ---
+if 'bq_df' not in st.session_state:
+    st.session_state.bq_df = None
+
+data_source = st.radio("Choose data source", ["Upload CSV", "BigQuery"], horizontal=True)
+
+bq_df = st.session_state.bq_df
+uploaded_file = None
+
+if 'available_custom_ids' not in st.session_state:
+    st.session_state.available_custom_ids = []
+if 'selected_custom_ids' not in st.session_state:
+    st.session_state.selected_custom_ids = []
+
+if data_source == "BigQuery":
+    with st.expander("BigQuery settings", expanded=True):
+        st.write("Use BigQuery to query your YouTube data by `custom_id` and date range.")
+        start_date = st.date_input("Start date", date(2019, 1, 1))
+        end_date = st.date_input("End date", date(2019, 12, 28))
+
+        if end_date < start_date:
+            st.error("End date must be the same or after the start date.")
+
+        if st.button("Load available Custom IDs"):
+            with st.spinner("Fetching available Custom IDs..."):
+                try:
+                    st.session_state.available_custom_ids = query_bq_custom_ids(start_date, end_date)
+                    st.success(f"Loaded {len(st.session_state.available_custom_ids)} Custom IDs.")
+                except Exception as exc:
+                    st.error(f"BigQuery error: {exc}")
+
+        if st.session_state.available_custom_ids:
+            available_ids = st.session_state.available_custom_ids
+            page_size = st.number_input("IDs per page", min_value=5, max_value=100, value=25, step=5)
+            max_page = max(1, (len(available_ids) - 1) // page_size + 1)
+            page = st.slider("Custom ID page", 1, max_page, 1)
+            start_ix = (page - 1) * page_size
+            end_ix = min(start_ix + page_size, len(available_ids))
+            page_ids = available_ids[start_ix:end_ix]
+
+            selected_on_page = st.multiselect(
+                f"Select Custom IDs on page {page} ({start_ix+1}-{end_ix})",
+                options=page_ids,
+                default=[cid for cid in page_ids if cid in st.session_state.selected_custom_ids]
+            )
+
+            selected_set = set(st.session_state.selected_custom_ids)
+            selected_set.update(selected_on_page)
+            deselected_on_page = set(page_ids) - set(selected_on_page)
+            selected_set.difference_update(deselected_on_page)
+            st.session_state.selected_custom_ids = sorted(selected_set)
+
+            st.write(f"Selected {len(st.session_state.selected_custom_ids)} Custom IDs total.")
+            if st.button("Clear selected Custom IDs"):
+                st.session_state.selected_custom_ids = []
+
+        custom_ids_text = st.text_area(
+            "Manual Custom IDs (comma-separated)",
+            ", ".join(st.session_state.selected_custom_ids) if st.session_state.selected_custom_ids else ""
+        )
+        final_custom_ids = [cid.strip() for cid in custom_ids_text.split(",") if cid.strip()]
+        if final_custom_ids:
+            st.write(f"Using {len(final_custom_ids)} Custom IDs for the query.")
+        else:
+            st.warning("No Custom IDs selected yet.")
+
+        if st.button("Load BigQuery data"):
+            if not final_custom_ids:
+                st.warning("Enter or select at least one Custom ID.")
+            else:
+                with st.spinner("Querying BigQuery..."):
+                    try:
+                        st.session_state.bq_df = query_bq_data(final_custom_ids, start_date, end_date)
+                        bq_df = st.session_state.bq_df
+                        if bq_df.empty:
+                            st.warning("No data found for the selected Custom ID(s) and date range.")
+                    except Exception as exc:
+                        st.error(f"BigQuery error: {exc}")
+
+elif data_source == "Upload CSV":
+    with st.expander("CSV upload", expanded=True):
+        uploaded_file = st.file_uploader("Upload your YouTube CSV Data", type=["csv"])
+
+if uploaded_file is not None and data_source == "Upload CSV":
     df = pd.read_csv(uploaded_file)
+elif data_source == "BigQuery" and bq_df is not None:
+    df = bq_df
+else:
+    df = None
+
+if df is not None:
+    # 2. Data Processing
+    if data_source == "BigQuery":
+        df.columns = [col.replace('\n', '').strip() for col in df.columns]
+        df.rename(columns={
+            'data_warehouse_yt_content_owner_video_metadata_video_id': 'Video data Video ID',
+            'data_warehouse_yt_content_owner_video_metadata_video_title': 'Video data Video Title',
+            'data_warehouse_yt_channel_metadata_channel_title': 'Video data Channel Title',
+            'data_warehouse_yt_content_owner_video_metadata_time_published_date': 'Video data Published Date',
+            'data_warehouse_yt_content_owner_video_metadata_custom_id': 'Video data Custom ID',
+            'data_warehouse_yt_daily_video_views_day_date': 'Metrics Date Date',
+            'data_warehouse_yt_daily_video_views_organic_views': 'Metrics Organic Views'
+        }, inplace=True)
     df.columns = [col.replace('\n', '').strip() for col in df.columns]
     df['Metrics Organic Views'] = pd.to_numeric(df['Metrics Organic Views'].astype(str).str.replace(',', ''), errors='coerce')
     df = df.dropna(subset=['Metrics Organic Views'])
     df['Video data Published Date'] = pd.to_datetime(df['Video data Published Date'])
     df['Metrics Date Date'] = pd.to_datetime(df['Metrics Date Date'])
+
+    with st.expander("Data summary", expanded=True):
+        st.write(f"**Data source:** {data_source}")
+        st.write(f"**Rows loaded:** {len(df)}")
+        if 'Video data Custom ID' in df.columns:
+            st.write(f"**Custom IDs:** {df['Video data Custom ID'].nunique()}")
+        if 'Metrics Date Date' in df.columns:
+            st.write(f"**Metrics date range:** {df['Metrics Date Date'].min().date()} to {df['Metrics Date Date'].max().date()}")
+        st.dataframe(df.head(20))
 
     # Ranking & Timing Logic
     video_info = df[['Video data Custom ID', 'Video data Video ID', 'Video data Published Date']].drop_duplicates()

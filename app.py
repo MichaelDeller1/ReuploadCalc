@@ -70,7 +70,7 @@ if uploaded_file is not None:
     m1, m2, m3 = st.columns(3)
     m1.metric("Total Unique Assets", f"{total_assets:,}")
     m2.metric("Total Video Uploads", f"{total_videos:,}")
-    m3.metric("Avg Iterations per Asset", f"{total_videos/total_assets:.2f}")
+    m3.metric("Avg Iterations per Asset", f"{total_videos/total_assets:.2f}" if total_assets > 0 else "0")
     st.divider()
 
     # Ranking & Timing
@@ -95,16 +95,14 @@ if uploaded_file is not None:
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(200, 10, "YouTube Strategic Iteration & Lift Report", ln=True, align='C')
     pdf.ln(5)
-    pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, f"Total Assets: {total_assets} | Total Videos: {total_videos}", ln=True, align='C')
 
+    # Filter for groups with iterations
     unique_vols = sorted([v for v in df['Total_Videos'].unique() if v > 1])
 
     for current_vol in unique_vols:
         sub_df = df[df['Total_Videos'] == current_vol]
         group_sample_size = sub_df[custom_id_col].nunique()
         
-        # Updated Title Phrasing
         st.header(f"📈 {group_sample_size} Assets With {current_vol} Iterations")
         
         # --- LIFT CALCULATION ---
@@ -117,8 +115,10 @@ if uploaded_file is not None:
                 
                 if not v_curr.empty and not v_prev.empty:
                     launch_date = v_curr[pub_date_col].iloc[0]
-                    pre_start, pre_end = launch_date - pd.Timedelta(days=window_input), launch_date - pd.Timedelta(days=1)
-                    post_start, post_end = launch_date, launch_date + pd.Timedelta(days=window_input-1)
+                    pre_start = launch_date - pd.Timedelta(days=window_input)
+                    pre_end = launch_date - pd.Timedelta(days=1)
+                    post_start = launch_date
+                    post_end = launch_date + pd.Timedelta(days=window_input-1)
                     
                     views_pre_old = v_prev[(v_prev[metrics_date_col] >= pre_start) & (v_prev[metrics_date_col] <= pre_end)][views_col].sum()
                     views_post_old = v_prev[(v_prev[metrics_date_col] >= post_start) & (v_prev[metrics_date_col] <= post_end)][views_col].sum()
@@ -126,23 +126,29 @@ if uploaded_file is not None:
                     
                     if views_pre_old > 0:
                         old_v_change = ((views_post_old - views_pre_old) / views_pre_old) * 100
-                        total_lift = (( (views_post_old + views_post_new) - views_pre_old) / views_pre_old) * 100
+                        total_lift = (((views_post_old + views_post_new) - views_pre_old) / views_pre_old) * 100
                         lift_data.append({'Rank': r, 'Old_Change': old_v_change, 'Net_Lift': total_lift})
 
-        # --- Plotting ---
-        ranks = range(1, int(current_vol) + 1)
-        timeline = range(0, max_timeline + 1)
-        template = pd.MultiIndex.from_product([ranks, timeline], names=['Video Rank', 'Days Since Asset Start']).to_frame(index=False)
-        agg_actual = sub_df.groupby(['Video Rank', 'Days Since Asset Start'])[views_col].mean().reset_index()
-        agg_plot = template.merge(agg_actual, on=['Video Rank', 'Days Since Asset Start'], how='left').fillna(0)
+        # --- IMPROVED PLOTTING LOGIC ---
+        # Instead of a template, we just aggregate what exists to avoid "averaging out" smaller cohorts
+        agg_plot = sub_df.groupby(['Video Rank', 'Days Since Asset Start'])[views_col].mean().reset_index()
         
-        avg_launches = video_info[video_info['Total_Videos'] == current_vol].groupby('Video Rank')['Days_From_Start'].mean()
-        for r, start_day in avg_launches.items():
-            agg_plot.loc[(agg_plot['Video Rank'] == r) & (agg_plot['Days Since Asset Start'] < start_day), views_col] = 0
-
+        # Filter for the timeline window
+        agg_plot = agg_plot[agg_plot['Days Since Asset Start'] <= max_timeline]
+        
+        # Ensure ranks are strings for discrete color mapping
         agg_plot['Video Rank Name'] = "Video " + agg_plot['Video Rank'].astype(str)
-        fig = px.area(agg_plot, x="Days Since Asset Start", y=views_col, color="Video Rank Name", template="plotly_white")
-        fig.update_traces(line=dict(width=0))
+        agg_plot = agg_plot.sort_values(['Days Since Asset Start', 'Video Rank'])
+
+        fig = px.area(
+            agg_plot, 
+            x="Days Since Asset Start", 
+            y=views_col, 
+            color="Video Rank Name",
+            template="plotly_white",
+            category_orders={"Video Rank Name": [f"Video {i}" for i in range(1, int(current_vol) + 1)]}
+        )
+        fig.update_traces(line=dict(width=0.5)) # Slight line helps visibility of small layers
         st.plotly_chart(fig, use_container_width=True)
 
         # --- UI Insights ---
@@ -168,6 +174,8 @@ if uploaded_file is not None:
                     l_str = f"V{int(rank)} Launch: V{int(rank-1)} changed {row['Old_Change']:.1f}%, Net Asset Lift: {row['Net_Lift']:.1f}%"
                     st.write(l_str)
                     group_summary_txt += l_str + "\n"
+            else:
+                st.write("No lift data available for this window.")
 
         # PDF Logic
         pdf.set_font("Arial", 'B', 12)

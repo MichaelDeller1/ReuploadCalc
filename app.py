@@ -28,14 +28,11 @@ def calculate_decay_day(video_df, decay_threshold_pct, streak_days):
     if peak_val <= 0: return None
     
     peak_day = video_df.loc[video_df['Organic Views'].idxmax(), 'Days Since Published']
-    
-    # Threshold logic: if decay_pct is 90, we are looking for views < 10% of peak
     threshold = ((100 - decay_threshold_pct) / 100) * peak_val
     
     post_peak = video_df[video_df['Days Since Published'] >= peak_day].copy()
     post_peak['below_threshold'] = post_peak['Organic Views'] < threshold
     
-    # Dynamic streak based on slider
     post_peak['streak'] = post_peak['below_threshold'].rolling(window=streak_days).sum()
     decay_hit = post_peak[post_peak['streak'] == streak_days]
     
@@ -48,18 +45,9 @@ uploaded_file = st.file_uploader("Upload your YouTube CSV Data", type=["csv"])
 if uploaded_file is not None:
     # --- Sidebar Controls ---
     st.sidebar.header("Analysis Parameters")
-    
-    # Decay Sliders
-    st.sidebar.subheader("Decay Settings")
     decay_pct_input = st.sidebar.slider("Decay Threshold (% drop from peak)", 10, 99, 90)
     streak_input = st.sidebar.slider("Consecutive Days to Confirm Decay", 1, 14, 5)
-    
-    # Lift Sliders
-    st.sidebar.subheader("Lift Settings")
     window_input = st.sidebar.slider("Comparison Window (Days)", 7, 90, 28)
-    
-    # Timeline Slider
-    st.sidebar.subheader("Visuals")
     max_timeline = st.sidebar.slider("Timeline Window (Days)", 30, 1500, 700)
 
     # 2. Data Processing
@@ -73,6 +61,17 @@ if uploaded_file is not None:
     df = df.dropna(subset=[views_col])
     df[pub_date_col] = pd.to_datetime(df[pub_date_col])
     df[metrics_date_col] = pd.to_datetime(df[metrics_date_col])
+
+    # --- TOP LEVEL OVERVIEW ---
+    total_assets = df[custom_id_col].nunique()
+    total_videos = df[video_id_col].nunique()
+    
+    st.subheader("📊 Global Asset Overview")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Unique Assets", f"{total_assets:,}")
+    m2.metric("Total Video Uploads", f"{total_videos:,}")
+    m3.metric("Avg Iterations per Asset", f"{total_videos/total_assets:.2f}")
+    st.divider()
 
     # Ranking & Timing
     video_info = df[[custom_id_col, video_id_col, pub_date_col]].drop_duplicates()
@@ -95,6 +94,9 @@ if uploaded_file is not None:
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(200, 10, "YouTube Strategic Iteration & Lift Report", ln=True, align='C')
+    pdf.ln(5)
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, f"Total Assets: {total_assets} | Total Videos: {total_videos}", ln=True, align='C')
 
     unique_vols = sorted([v for v in df['Total_Videos'].unique() if v > 1])
 
@@ -102,9 +104,10 @@ if uploaded_file is not None:
         sub_df = df[df['Total_Videos'] == current_vol]
         group_sample_size = sub_df[custom_id_col].nunique()
         
-        st.header(f"📈 Assets with {current_vol} Iterations (n={group_sample_size})")
+        # Updated Title Phrasing
+        st.header(f"📈 {group_sample_size} Assets With {current_vol} Iterations")
         
-        # --- LIFT CALCULATION (Dynamic Window) ---
+        # --- LIFT CALCULATION ---
         lift_data = []
         for asset_id in sub_df[custom_id_col].unique():
             asset_data = sub_df[sub_df[custom_id_col] == asset_id]
@@ -114,8 +117,6 @@ if uploaded_file is not None:
                 
                 if not v_curr.empty and not v_prev.empty:
                     launch_date = v_curr[pub_date_col].iloc[0]
-                    
-                    # Dynamic windows based on slider
                     pre_start, pre_end = launch_date - pd.Timedelta(days=window_input), launch_date - pd.Timedelta(days=1)
                     post_start, post_end = launch_date, launch_date + pd.Timedelta(days=window_input-1)
                     
@@ -140,23 +141,21 @@ if uploaded_file is not None:
             agg_plot.loc[(agg_plot['Video Rank'] == r) & (agg_plot['Days Since Asset Start'] < start_day), views_col] = 0
 
         agg_plot['Video Rank Name'] = "Video " + agg_plot['Video Rank'].astype(str)
-        fig = px.area(agg_plot, x="Days Since Asset Start", y=views_col, color="Video Rank Name", template="plotly_white", 
-                      title=f"Avg Performance: {current_vol} Uploads")
+        fig = px.area(agg_plot, x="Days Since Asset Start", y=views_col, color="Video Rank Name", template="plotly_white")
         fig.update_traces(line=dict(width=0))
         st.plotly_chart(fig, use_container_width=True)
 
         # --- UI Insights ---
         col1, col2 = st.columns(2)
-        group_summary_txt = f"Analysis for {current_vol} Iterations\n"
+        group_summary_txt = f"{group_sample_size} Assets With {current_vol} Iterations\n"
 
         with col1:
-            st.subheader(f"⏱️ Timing & Decay ({decay_pct_input}% drop)")
+            st.subheader("⏱️ Timing & Decay")
             for r in range(1, int(current_vol) + 1):
-                video_ids = sub_df[sub_df['Video Rank'] == r][video_id_col].unique()
-                d_days = [calculate_decay_day(sub_df[sub_df[video_id_col] == vid], decay_pct_input, streak_input) for vid in video_ids]
+                vids = sub_df[sub_df['Video Rank'] == r][video_id_col].unique()
+                d_days = [calculate_decay_day(sub_df[sub_df[video_id_col] == v], decay_pct_input, streak_input) for v in vids]
                 valid_d = [d for d in d_days if d is not None]
                 avg_d = np.mean(valid_d) if valid_d else 0
-                
                 d_str = f"Video {r}: Avg Decay Day {avg_d:.1f}"
                 st.write(d_str)
                 group_summary_txt += d_str + "\n"
@@ -169,12 +168,10 @@ if uploaded_file is not None:
                     l_str = f"V{int(rank)} Launch: V{int(rank-1)} changed {row['Old_Change']:.1f}%, Net Asset Lift: {row['Net_Lift']:.1f}%"
                     st.write(l_str)
                     group_summary_txt += l_str + "\n"
-            else:
-                st.write("Insufficient data for window analysis.")
 
         # PDF Logic
         pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, f"Group: {current_vol} Iterations", ln=True)
+        pdf.cell(0, 10, f"Group: {group_sample_size} Assets With {current_vol} Iterations", ln=True)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             fig.write_image(tmp.name)
             pdf.image(tmp.name, x=10, w=180)
@@ -183,8 +180,6 @@ if uploaded_file is not None:
         pdf.multi_cell(0, 7, group_summary_txt)
         pdf.ln(5)
 
-    st.download_button("📥 Download Strategic Report", 
-                       data=pdf.output(dest='S').encode('latin-1', 'replace'), 
-                       file_name=f"YT_Strategic_Analysis_{window_input}d.pdf")
+    st.download_button("📥 Download Strategic Report", data=pdf.output(dest='S').encode('latin-1', 'replace'), file_name="YT_Strategic_Analysis.pdf")
 else:
     st.info("👋 Upload your YouTube CSV to begin.")

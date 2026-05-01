@@ -15,12 +15,12 @@ st.title("Strategic Asset Lifecycle & Lift Analysis")
 st.markdown("""
 ### 📖 Glossary
 - **Asset**: The core creative content (Custom ID).
-- **Decay Day**: The day views stayed **90% below peak** for 5 consecutive days.
-- **Net Difference**: Total views 28 days *after* a re-upload vs. 28 days *before*.
+- **Decay Day**: The day a video's views drop below your threshold for a sustained period.
+- **Net Lift**: The total performance change of the asset (Old + New video) compared to the old video's baseline.
 """)
 st.divider()
 
-def calculate_decay_day(video_df, decay_threshold_pct):
+def calculate_decay_day(video_df, decay_threshold_pct, streak_days):
     video_df = video_df.sort_values('Days Since Published')
     if video_df.empty: return None
     
@@ -28,30 +28,47 @@ def calculate_decay_day(video_df, decay_threshold_pct):
     if peak_val <= 0: return None
     
     peak_day = video_df.loc[video_df['Organic Views'].idxmax(), 'Days Since Published']
-    # Threshold is 90% BELOW peak (meaning only 10% of peak remains)
+    
+    # Threshold logic: if decay_pct is 90, we are looking for views < 10% of peak
     threshold = ((100 - decay_threshold_pct) / 100) * peak_val
     
     post_peak = video_df[video_df['Days Since Published'] >= peak_day].copy()
     post_peak['below_threshold'] = post_peak['Organic Views'] < threshold
     
-    # Updated to 5 consecutive days as requested
-    post_peak['streak'] = post_peak['below_threshold'].rolling(window=5).sum()
-    decay_hit = post_peak[post_peak['streak'] == 5]
+    # Dynamic streak based on slider
+    post_peak['streak'] = post_peak['below_threshold'].rolling(window=streak_days).sum()
+    decay_hit = post_peak[post_peak['streak'] == streak_days]
     
     if not decay_hit.empty:
-        return decay_hit.iloc[0]['Days Since Published'] - 4
+        return decay_hit.iloc[0]['Days Since Published'] - (streak_days - 1)
     return None
 
 uploaded_file = st.file_uploader("Upload your YouTube CSV Data", type=["csv"])
 
 if uploaded_file is not None:
+    # --- Sidebar Controls ---
+    st.sidebar.header("Analysis Parameters")
+    
+    # Decay Sliders
+    st.sidebar.subheader("Decay Settings")
+    decay_pct_input = st.sidebar.slider("Decay Threshold (% drop from peak)", 10, 99, 90)
+    streak_input = st.sidebar.slider("Consecutive Days to Confirm Decay", 1, 14, 5)
+    
+    # Lift Sliders
+    st.sidebar.subheader("Lift Settings")
+    window_input = st.sidebar.slider("Comparison Window (Days)", 7, 90, 28)
+    
+    # Timeline Slider
+    st.sidebar.subheader("Visuals")
+    max_timeline = st.sidebar.slider("Timeline Window (Days)", 30, 1500, 700)
+
+    # 2. Data Processing
     df = pd.read_csv(uploaded_file)
     df.columns = [col.strip() for col in df.columns]
     
     views_col, custom_id_col, video_id_col, pub_date_col, metrics_date_col = \
         'Organic Views', 'Custom ID', 'Video ID', 'Published Date', 'Date Date'
 
-    # Data Cleaning
     df[views_col] = pd.to_numeric(df[views_col].astype(str).str.replace(',', ''), errors='coerce')
     df = df.dropna(subset=[views_col])
     df[pub_date_col] = pd.to_datetime(df[pub_date_col])
@@ -72,11 +89,7 @@ if uploaded_file is not None:
     df['Days Since Asset Start'] = (df[metrics_date_col] - df['Asset_Day_0']).dt.days
     df['Days Since Published'] = (df[metrics_date_col] - df[pub_date_col]).dt.days
 
-    # Global Settings
-    st.sidebar.header("Global Settings")
-    max_timeline = st.sidebar.slider("Timeline Window (Days)", 30, 1500, 700)
-    decay_pct = 90 # Fixed at 90% as per request
-
+    # 3. PDF Initialization
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -91,7 +104,7 @@ if uploaded_file is not None:
         
         st.header(f"📈 Assets with {current_vol} Iterations (n={group_sample_size})")
         
-        # --- LIFT CALCULATION (28 Day Windows) ---
+        # --- LIFT CALCULATION (Dynamic Window) ---
         lift_data = []
         for asset_id in sub_df[custom_id_col].unique():
             asset_data = sub_df[sub_df[custom_id_col] == asset_id]
@@ -99,22 +112,23 @@ if uploaded_file is not None:
                 v_prev = asset_data[asset_data['Video Rank'] == r-1]
                 v_curr = asset_data[asset_data['Video Rank'] == r]
                 
-                launch_date = v_curr[pub_date_col].iloc[0]
-                
-                # Windows
-                pre_start, pre_end = launch_date - pd.Timedelta(days=28), launch_date - pd.Timedelta(days=1)
-                post_start, post_end = launch_date, launch_date + pd.Timedelta(days=27)
-                
-                views_pre_old = v_prev[(v_prev[metrics_date_col] >= pre_start) & (v_prev[metrics_date_col] <= pre_end)][views_col].sum()
-                views_post_old = v_prev[(v_prev[metrics_date_col] >= post_start) & (v_prev[metrics_date_col] <= post_end)][views_col].sum()
-                views_post_new = v_curr[(v_curr[metrics_date_col] >= post_start) & (v_curr[metrics_date_col] <= post_end)][views_col].sum()
-                
-                if views_pre_old > 0:
-                    old_v_change = ((views_post_old - views_pre_old) / views_pre_old) * 100
-                    total_lift = (( (views_post_old + views_post_new) - views_pre_old) / views_pre_old) * 100
-                    lift_data.append({'Rank': r, 'Old_Change': old_v_change, 'Net_Lift': total_lift})
+                if not v_curr.empty and not v_prev.empty:
+                    launch_date = v_curr[pub_date_col].iloc[0]
+                    
+                    # Dynamic windows based on slider
+                    pre_start, pre_end = launch_date - pd.Timedelta(days=window_input), launch_date - pd.Timedelta(days=1)
+                    post_start, post_end = launch_date, launch_date + pd.Timedelta(days=window_input-1)
+                    
+                    views_pre_old = v_prev[(v_prev[metrics_date_col] >= pre_start) & (v_prev[metrics_date_col] <= pre_end)][views_col].sum()
+                    views_post_old = v_prev[(v_prev[metrics_date_col] >= post_start) & (v_prev[metrics_date_col] <= post_end)][views_col].sum()
+                    views_post_new = v_curr[(v_curr[metrics_date_col] >= post_start) & (v_curr[metrics_date_col] <= post_end)][views_col].sum()
+                    
+                    if views_pre_old > 0:
+                        old_v_change = ((views_post_old - views_pre_old) / views_pre_old) * 100
+                        total_lift = (( (views_post_old + views_post_new) - views_pre_old) / views_pre_old) * 100
+                        lift_data.append({'Rank': r, 'Old_Change': old_v_change, 'Net_Lift': total_lift})
 
-        # Plotting & Aggregation
+        # --- Plotting ---
         ranks = range(1, int(current_vol) + 1)
         timeline = range(0, max_timeline + 1)
         template = pd.MultiIndex.from_product([ranks, timeline], names=['Video Rank', 'Days Since Asset Start']).to_frame(index=False)
@@ -126,34 +140,39 @@ if uploaded_file is not None:
             agg_plot.loc[(agg_plot['Video Rank'] == r) & (agg_plot['Days Since Asset Start'] < start_day), views_col] = 0
 
         agg_plot['Video Rank Name'] = "Video " + agg_plot['Video Rank'].astype(str)
-        fig = px.area(agg_plot, x="Days Since Asset Start", y=views_col, color="Video Rank Name", template="plotly_white")
+        fig = px.area(agg_plot, x="Days Since Asset Start", y=views_col, color="Video Rank Name", template="plotly_white", 
+                      title=f"Avg Performance: {current_vol} Uploads")
         fig.update_traces(line=dict(width=0))
         st.plotly_chart(fig, use_container_width=True)
 
-        # UI Tables
+        # --- UI Insights ---
         col1, col2 = st.columns(2)
         group_summary_txt = f"Analysis for {current_vol} Iterations\n"
 
         with col1:
-            st.subheader("⏱️ Timing & Decay")
+            st.subheader(f"⏱️ Timing & Decay ({decay_pct_input}% drop)")
             for r in range(1, int(current_vol) + 1):
-                # Calculate avg decay for this rank
-                d_days = [calculate_decay_day(sub_df[sub_df[video_id_col] == vid], 90) for vid in sub_df[sub_df['Video Rank']==r][video_id_col].unique()]
-                avg_d = np.nanmean([d for d in d_days if d is not None])
+                video_ids = sub_df[sub_df['Video Rank'] == r][video_id_col].unique()
+                d_days = [calculate_decay_day(sub_df[sub_df[video_id_col] == vid], decay_pct_input, streak_input) for vid in video_ids]
+                valid_d = [d for d in d_days if d is not None]
+                avg_d = np.mean(valid_d) if valid_d else 0
+                
                 d_str = f"Video {r}: Avg Decay Day {avg_d:.1f}"
                 st.write(d_str)
                 group_summary_txt += d_str + "\n"
 
         with col2:
-            st.subheader("🚀 28-Day Impact")
+            st.subheader(f"🚀 {window_input}-Day Impact")
             if lift_data:
                 lift_df = pd.DataFrame(lift_data).groupby('Rank').mean()
                 for rank, row in lift_df.iterrows():
                     l_str = f"V{int(rank)} Launch: V{int(rank-1)} changed {row['Old_Change']:.1f}%, Net Asset Lift: {row['Net_Lift']:.1f}%"
                     st.write(l_str)
                     group_summary_txt += l_str + "\n"
+            else:
+                st.write("Insufficient data for window analysis.")
 
-        # PDF Export
+        # PDF Logic
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(0, 10, f"Group: {current_vol} Iterations", ln=True)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
@@ -164,4 +183,8 @@ if uploaded_file is not None:
         pdf.multi_cell(0, 7, group_summary_txt)
         pdf.ln(5)
 
-    st.download_button("📥 Download Strategic Report", data=pdf.output(dest='S').encode('latin-1', 'replace'), file_name="Strategic_Report.pdf")
+    st.download_button("📥 Download Strategic Report", 
+                       data=pdf.output(dest='S').encode('latin-1', 'replace'), 
+                       file_name=f"YT_Strategic_Analysis_{window_input}d.pdf")
+else:
+    st.info("👋 Upload your YouTube CSV to begin.")

@@ -54,19 +54,8 @@ if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
     df.columns = [col.strip() for col in df.columns]
     
-    # Header Mapping (Fixed for your CSV structure)
-    views_col = 'Organic Views'
-    custom_id_col = 'Custom ID'
-    video_id_col = 'Video ID'
-    pub_date_col = 'Published Date'
-    metrics_date_col = 'Date Date'
-
-    # Safety check for missing columns
-    required = [views_col, custom_id_col, video_id_col, pub_date_col, metrics_date_col]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        st.error(f"Missing columns: {missing}. Please check your CSV headers.")
-        st.stop()
+    views_col, custom_id_col, video_id_col, pub_date_col, metrics_date_col = \
+        'Organic Views', 'Custom ID', 'Video ID', 'Published Date', 'Date Date'
 
     df[views_col] = pd.to_numeric(df[views_col].astype(str).str.replace(',', ''), errors='coerce')
     df = df.dropna(subset=[views_col])
@@ -125,17 +114,25 @@ if uploaded_file is not None:
                 
                 if not v_curr.empty and not v_prev.empty:
                     launch_date = v_curr[pub_date_col].iloc[0]
-                    pre_start, pre_end = launch_date - pd.Timedelta(days=window_input), launch_date - pd.Timedelta(days=1)
-                    post_start, post_end = launch_date, launch_date + pd.Timedelta(days=window_input-1)
+                    pre_start = launch_date - pd.Timedelta(days=window_input)
+                    pre_end = launch_date - pd.Timedelta(days=1)
+                    post_start = launch_date
+                    post_end = launch_date + pd.Timedelta(days=window_input-1)
                     
                     views_pre_old = v_prev[(v_prev[metrics_date_col] >= pre_start) & (v_prev[metrics_date_col] <= pre_end)][views_col].sum()
                     views_post_old = v_prev[(v_prev[metrics_date_col] >= post_start) & (v_prev[metrics_date_col] <= post_end)][views_col].sum()
                     views_post_new = v_curr[(v_curr[metrics_date_col] >= post_start) & (v_curr[metrics_date_col] <= post_end)][views_col].sum()
                     
                     if views_pre_old > 0:
+                        raw_diff = (views_post_old + views_post_new) - views_pre_old
                         old_v_change = ((views_post_old - views_pre_old) / views_pre_old) * 100
-                        total_lift = (((views_post_old + views_post_new) - views_pre_old) / views_pre_old) * 100
-                        lift_data.append({'Rank': r, 'Old_Change': old_v_change, 'Net_Lift': total_lift})
+                        total_lift = (raw_diff / views_pre_old) * 100
+                        lift_data.append({
+                            'Rank': r, 
+                            'Old_Change': old_v_change, 
+                            'Net_Lift_Pct': total_lift,
+                            'Raw_Diff': raw_diff
+                        })
 
         # --- Plotting ---
         agg_plot = sub_df.groupby(['Video Rank', 'Days Since Asset Start'])[views_col].mean().reset_index()
@@ -153,18 +150,16 @@ if uploaded_file is not None:
         fig.update_traces(line=dict(width=0.5))
         st.plotly_chart(fig, width='stretch')
 
-        # --- NEW: SOURCE DATA DOWNLOAD BUTTON ---
-        # Extract unique video list for this cohort
+        # --- Source Data Download ---
         video_list_df = sub_df[[custom_id_col, video_id_col, 'Video Rank', pub_date_col]].drop_duplicates()
         video_list_df = video_list_df.sort_values([custom_id_col, 'Video Rank'])
-        
         csv_list = video_list_df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label=f"📂 Download ID List for this Group ({group_sample_size} Assets)",
+            label=f"📂 Download ID List ({group_sample_size} Assets)",
             data=csv_list,
             file_name=f"asset_list_{current_vol}_iterations.csv",
             mime="text/csv",
-            key=f"dl_{current_vol}" # Unique key for Streamlit
+            key=f"dl_{current_vol}"
         )
 
         # --- UI Insights ---
@@ -187,7 +182,9 @@ if uploaded_file is not None:
             if lift_data:
                 lift_df = pd.DataFrame(lift_data).groupby('Rank').mean()
                 for rank, row in lift_df.iterrows():
-                    l_str = f"V{int(rank)} Launch: V{int(rank-1)} changed {row['Old_Change']:.1f}%, Net Asset Lift: {row['Net_Lift']:.1f}%"
+                    l_str = (f"V{int(rank)} Launch Impact:\n"
+                             f"- V{int(rank-1)} Growth: {row['Old_Change']:.1f}%\n"
+                             f"- Net Asset Lift: {row['Net_Lift_Pct']:.1f}% ({row['Raw_Diff']:+,.0f} views)")
                     st.write(l_str)
                     group_summary_txt += l_str + "\n"
 

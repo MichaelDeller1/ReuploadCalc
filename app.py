@@ -28,8 +28,6 @@ def calculate_decay_day(video_df, views_col, decay_threshold_pct, streak_days):
     if peak_val <= 0: return None
     
     peak_day = video_df.loc[video_df[views_col].idxmax(), 'Days Since Published']
-    
-    # Threshold logic: views < (100 - decay_pct)% of peak
     threshold = ((100 - decay_threshold_pct) / 100) * peak_val
     
     post_peak = video_df[video_df['Days Since Published'] >= peak_day].copy()
@@ -56,7 +54,7 @@ if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
     df.columns = [col.strip() for col in df.columns]
     
-    # MAPPING TO YOUR ACTUAL CSV HEADERS
+    # Header Mapping (Fixed for your CSV structure)
     views_col = 'Organic Views'
     custom_id_col = 'Custom ID'
     video_id_col = 'Video ID'
@@ -67,7 +65,7 @@ if uploaded_file is not None:
     required = [views_col, custom_id_col, video_id_col, pub_date_col, metrics_date_col]
     missing = [c for c in required if c not in df.columns]
     if missing:
-        st.error(f"Missing columns in CSV: {missing}. Please check your headers.")
+        st.error(f"Missing columns: {missing}. Please check your CSV headers.")
         st.stop()
 
     df[views_col] = pd.to_numeric(df[views_col].astype(str).str.replace(',', ''), errors='coerce')
@@ -107,8 +105,7 @@ if uploaded_file is not None:
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(200, 10, "YouTube Strategic Iteration & Lift Report", ln=True, align='C')
-    pdf.set_font("Arial", size=10)
-    pdf.cell(200, 10, f"Total Assets: {total_assets} | Total Videos: {total_videos}", ln=True, align='C')
+    pdf.ln(5)
 
     unique_vols = sorted([v for v in df['Total_Videos'].unique() if v > 1])
 
@@ -128,10 +125,8 @@ if uploaded_file is not None:
                 
                 if not v_curr.empty and not v_prev.empty:
                     launch_date = v_curr[pub_date_col].iloc[0]
-                    pre_start = launch_date - pd.Timedelta(days=window_input)
-                    pre_end = launch_date - pd.Timedelta(days=1)
-                    post_start = launch_date
-                    post_end = launch_date + pd.Timedelta(days=window_input-1)
+                    pre_start, pre_end = launch_date - pd.Timedelta(days=window_input), launch_date - pd.Timedelta(days=1)
+                    post_start, post_end = launch_date, launch_date + pd.Timedelta(days=window_input-1)
                     
                     views_pre_old = v_prev[(v_prev[metrics_date_col] >= pre_start) & (v_prev[metrics_date_col] <= pre_end)][views_col].sum()
                     views_post_old = v_prev[(v_prev[metrics_date_col] >= post_start) & (v_prev[metrics_date_col] <= post_end)][views_col].sum()
@@ -157,6 +152,20 @@ if uploaded_file is not None:
         fig.update_layout(hovermode="x unified", hoverlabel=dict(bgcolor="white", font_size=12))
         fig.update_traces(line=dict(width=0.5))
         st.plotly_chart(fig, width='stretch')
+
+        # --- NEW: SOURCE DATA DOWNLOAD BUTTON ---
+        # Extract unique video list for this cohort
+        video_list_df = sub_df[[custom_id_col, video_id_col, 'Video Rank', pub_date_col]].drop_duplicates()
+        video_list_df = video_list_df.sort_values([custom_id_col, 'Video Rank'])
+        
+        csv_list = video_list_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label=f"📂 Download ID List for this Group ({group_sample_size} Assets)",
+            data=csv_list,
+            file_name=f"asset_list_{current_vol}_iterations.csv",
+            mime="text/csv",
+            key=f"dl_{current_vol}" # Unique key for Streamlit
+        )
 
         # --- UI Insights ---
         col1, col2 = st.columns(2)
@@ -193,6 +202,6 @@ if uploaded_file is not None:
         pdf.multi_cell(0, 7, group_summary_txt)
         pdf.ln(5)
 
-    st.download_button("📥 Download Strategic Report", data=pdf.output(dest='S').encode('latin-1', 'replace'), file_name="YT_Strategic_Analysis.pdf")
+    st.download_button("📥 Download Strategic Report (PDF)", data=pdf.output(dest='S').encode('latin-1', 'replace'), file_name="YT_Strategic_Analysis.pdf")
 else:
     st.info("👋 Upload your YouTube CSV to begin.")
